@@ -8,3 +8,5 @@ uvicorn==0.34.0
 python-multipart==0.0.20
 aiosqlite==0.21.0
 ollama==0.5.2
+chromadb==1.0.7
+pymupdf==1.25.5
