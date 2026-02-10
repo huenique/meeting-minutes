@@ -11,7 +11,7 @@ import json
 from threading import Lock
 from transcript_processor import TranscriptProcessor
 from question_detector import detect_questions, DetectedQuestion
-from rag_engine import RAGEngine, RAGAnswer
+from rag_engine import RAGEngine, RAGAnswer, read_files_as_context
 import time
 
 # Load environment variables
@@ -684,6 +684,68 @@ async def ask_question_api(request: AskQuestionRequest):
         )
     except Exception as e:
         logger.error(f"Error answering question: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class AskQuestionWithContextRequest(BaseModel):
+    """Request model for answering questions with direct file context.
+
+    Files are read ephemerally — their content is never stored in a database
+    or vector store. Context is used only for the current request.
+    """
+    question: str
+    meeting_context: Optional[str] = ""
+    file_paths: List[str] = []
+    model: Optional[str] = "ollama"
+    model_name: Optional[str] = "llama3.2"
+
+
+@app.post("/ask-question-with-context")
+async def ask_question_with_context_api(request: AskQuestionWithContextRequest):
+    """Answer a question using direct file content as context (no vectorization).
+
+    Files are read on-the-fly and included in the LLM prompt. No file content
+    is stored in the database — context is ephemeral and session-only.
+    """
+    try:
+        answer = await rag_engine.generate_answer_with_files(
+            question=request.question,
+            meeting_context=request.meeting_context or "",
+            file_paths=request.file_paths,
+            model=request.model or "ollama",
+            model_name=request.model_name or "llama3.2",
+        )
+        return answer.model_dump()
+    except ImportError as e:
+        raise HTTPException(
+            status_code=501,
+            detail=f"RAG dependencies not installed: {str(e)}",
+        )
+    except Exception as e:
+        logger.error(f"Error answering question with context: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/read-context-files")
+async def read_context_files_api(request: AskQuestionWithContextRequest):
+    """Read files and return their extracted text content for preview.
+
+    Files are read ephemerally — content is not stored anywhere.
+    Useful for previewing what context will be sent to the LLM.
+    """
+    try:
+        file_contents = read_files_as_context(request.file_paths)
+        return [
+            {
+                "filename": fc["filename"],
+                "file_path": fc["file_path"],
+                "text_preview": fc["text"][:500],
+                "text_length": len(fc["text"]),
+            }
+            for fc in file_contents
+        ]
+    except Exception as e:
+        logger.error(f"Error reading context files: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 

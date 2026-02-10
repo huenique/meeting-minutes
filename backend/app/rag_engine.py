@@ -4,15 +4,22 @@ RAG (Retrieval-Augmented Generation) Engine for Meetily.
 Combines question detection, document retrieval, and LLM-based answer
 generation. Integrates with existing LLM providers (Ollama, Claude, Groq,
 OpenAI) via the same infrastructure as the summary pipeline.
+
+Supports two context modes:
+1. Vector-based retrieval via ChromaDB (traditional RAG)
+2. Direct file context — files are read and passed as-is to the LLM without
+   vectorization, suitable for modern multimodal LLMs. File content is
+   ephemeral (never stored in a database).
 """
 
 import logging
 import os
+from pathlib import Path
 from typing import Dict, List, Optional
 
 from pydantic import BaseModel
 
-from document_indexer import DocumentIndexer
+from document_indexer import DocumentIndexer, _extract_text_from_file, SUPPORTED_EXTENSIONS
 from question_detector import DetectedQuestion, detect_questions
 
 logger = logging.getLogger(__name__)
@@ -172,11 +179,111 @@ class RAGEngine:
             confidence=confidence,
         )
 
+    async def generate_answer_with_files(
+        self,
+        question: str,
+        meeting_context: str,
+        file_paths: List[str],
+        model: str = "ollama",
+        model_name: str = "llama3.2",
+    ) -> RAGAnswer:
+        """
+        Generate an answer using direct file content as context (no vectorization).
+
+        Reads files directly and includes their text content in the LLM prompt.
+        File content is ephemeral — it is never stored in a database or vector
+        store. This is suitable for modern multimodal LLMs that can handle
+        large context windows.
+
+        Args:
+            question: The question to answer.
+            meeting_context: Recent transcript text for context.
+            file_paths: List of file paths to read as context. Each file is
+                read, its text extracted, and included in the prompt. Files
+                are not persisted anywhere.
+            model: LLM provider ('ollama', 'claude', 'groq', 'openai').
+            model_name: Specific model name.
+
+        Returns:
+            A RAGAnswer with the generated answer and file sources.
+        """
+        file_contents = read_files_as_context(file_paths)
+
+        # Build file context string
+        file_context = ""
+        if file_contents:
+            parts = []
+            for i, fc in enumerate(file_contents, 1):
+                parts.append(
+                    f"[File {i}: {fc['filename']}]\n{fc['text']}"
+                )
+            file_context = "\n\n".join(parts)
+
+        # Construct the prompt with direct file context
+        prompt = _build_rag_prompt(
+            question, meeting_context, knowledge_context="",
+            file_context=file_context,
+        )
+
+        # Generate answer
+        answer_text = await _call_llm(prompt, model, model_name)
+
+        return RAGAnswer(
+            question=question,
+            answer=answer_text,
+            sources=[
+                {
+                    "filename": fc["filename"],
+                    "text_preview": fc["text"][:200],
+                    "distance": None,
+                }
+                for fc in file_contents
+            ],
+            confidence=0.8 if file_contents else 0.4,
+        )
+
+
+def read_files_as_context(file_paths: List[str]) -> List[Dict]:
+    """
+    Read files and extract their text content for direct LLM context.
+
+    Files are read ephemerally — content is never stored in a database.
+    Unsupported or unreadable files are skipped with a warning.
+
+    Args:
+        file_paths: List of absolute or relative file paths.
+
+    Returns:
+        List of dicts with 'filename', 'file_path', and 'text' keys.
+    """
+    results: List[Dict] = []
+    for fp in file_paths:
+        fp = os.path.abspath(fp)
+        if not os.path.isfile(fp):
+            logger.warning(f"Skipping non-existent file: {fp}")
+            continue
+        ext = Path(fp).suffix.lower()
+        if ext not in SUPPORTED_EXTENSIONS:
+            logger.warning(f"Skipping unsupported file type {ext}: {fp}")
+            continue
+        try:
+            text = _extract_text_from_file(fp)
+            if text and text.strip():
+                results.append({
+                    "filename": os.path.basename(fp),
+                    "file_path": fp,
+                    "text": text,
+                })
+        except Exception as e:
+            logger.warning(f"Error reading file {fp}: {e}")
+    return results
+
 
 def _build_rag_prompt(
     question: str,
     meeting_context: str,
     knowledge_context: str,
+    file_context: str = "",
 ) -> str:
     """Build the prompt for RAG-based answer generation."""
     parts = [
@@ -192,6 +299,11 @@ def _build_rag_prompt(
     if knowledge_context:
         parts.append(
             f"## Relevant Knowledge Base Documents\n{knowledge_context}\n"
+        )
+
+    if file_context:
+        parts.append(
+            f"## Attached File Context\n{file_context}\n"
         )
 
     parts.append(

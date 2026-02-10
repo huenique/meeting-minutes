@@ -9,7 +9,7 @@ import pytest
 # Add the app directory to the path so we can import the modules
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
 
-from rag_engine import _build_rag_prompt, RAGAnswer, RAGContext, QuestionWithAnswer
+from rag_engine import _build_rag_prompt, RAGAnswer, RAGContext, QuestionWithAnswer, read_files_as_context
 from question_detector import DetectedQuestion
 
 
@@ -56,6 +56,112 @@ class TestBuildRAGPrompt:
         )
         assert "What is the deadline?" in prompt
         assert "meeting assistant" in prompt.lower()
+
+    def test_prompt_with_file_context(self):
+        prompt = _build_rag_prompt(
+            question="What is the budget?",
+            meeting_context="",
+            knowledge_context="",
+            file_context="[File 1: budget.md]\nThe Q2 budget is $50,000.",
+        )
+        assert "What is the budget?" in prompt
+        assert "Attached File Context" in prompt
+        assert "$50,000" in prompt
+        assert "Knowledge Base" not in prompt
+
+    def test_prompt_with_both_knowledge_and_file_context(self):
+        prompt = _build_rag_prompt(
+            question="What is the plan?",
+            meeting_context="We discussed Q2.",
+            knowledge_context="[Source 1: plan.md]\nDeliver feature X.",
+            file_context="[File 1: roadmap.md]\nQ2 priorities.",
+        )
+        assert "Knowledge Base" in prompt
+        assert "Attached File Context" in prompt
+        assert "Meeting Context" in prompt
+
+    def test_prompt_without_file_context(self):
+        prompt = _build_rag_prompt(
+            question="What is the deadline?",
+            meeting_context="context",
+            knowledge_context="knowledge",
+            file_context="",
+        )
+        assert "Attached File Context" not in prompt
+
+
+class TestReadFilesAsContext:
+    """Tests for the read_files_as_context function."""
+
+    def test_read_text_file(self):
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False
+        ) as f:
+            f.write("Hello from context file!")
+            f.flush()
+            results = read_files_as_context([f.name])
+            assert len(results) == 1
+            assert results[0]["text"] == "Hello from context file!"
+            assert results[0]["filename"] == os.path.basename(f.name)
+        os.unlink(f.name)
+
+    def test_read_markdown_file(self):
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".md", delete=False
+        ) as f:
+            f.write("# Context\n\nThis is context.")
+            f.flush()
+            results = read_files_as_context([f.name])
+            assert len(results) == 1
+            assert "Context" in results[0]["text"]
+        os.unlink(f.name)
+
+    def test_skip_nonexistent_file(self):
+        results = read_files_as_context(["/nonexistent/file.txt"])
+        assert len(results) == 0
+
+    def test_skip_unsupported_file(self):
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".xyz", delete=False
+        ) as f:
+            f.write("test")
+            f.flush()
+            results = read_files_as_context([f.name])
+            assert len(results) == 0
+        os.unlink(f.name)
+
+    def test_read_multiple_files(self):
+        files = []
+        for i in range(3):
+            f = tempfile.NamedTemporaryFile(
+                mode="w", suffix=".txt", delete=False
+            )
+            f.write(f"Content {i}")
+            f.flush()
+            f.close()
+            files.append(f.name)
+
+        results = read_files_as_context(files)
+        assert len(results) == 3
+        for i, r in enumerate(results):
+            assert f"Content {i}" in r["text"]
+
+        for fp in files:
+            os.unlink(fp)
+
+    def test_empty_file_list(self):
+        results = read_files_as_context([])
+        assert results == []
+
+    def test_skip_empty_file(self):
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False
+        ) as f:
+            f.write("")
+            f.flush()
+            results = read_files_as_context([f.name])
+            assert len(results) == 0
+        os.unlink(f.name)
 
 
 class TestRAGModels:

@@ -49,6 +49,24 @@ export interface AskQuestionRequest {
     n_results?: number;
 }
 
+/** Request to ask a question using direct file context (no vectorization).
+ *  Files are read ephemerally — content is never stored in a database. */
+export interface AskQuestionWithContextRequest {
+    question: string;
+    meeting_context?: string;
+    file_paths: string[];
+    model?: string;
+    model_name?: string;
+}
+
+/** Preview of a context file's content. */
+export interface ContextFilePreview {
+    filename: string;
+    file_path: string;
+    text_preview: string;
+    text_length: number;
+}
+
 /** Metadata about an indexed document. */
 export interface DocumentMetadata {
     doc_id: string;

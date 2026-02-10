@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
-import { ArrowLeft, Settings2, Mic, Database as DatabaseIcon, SparkleIcon } from 'lucide-react';
+import { ArrowLeft, Settings2, Mic, Database as DatabaseIcon, SparkleIcon, FileText } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { invoke } from '@tauri-apps/api/core';
 import { motion } from 'framer-motion';
@@ -9,6 +9,7 @@ import { TranscriptSettings, TranscriptModelProps } from '@/components/Transcrip
 import { RecordingSettings } from '@/components/RecordingSettings';
 import { PreferenceSettings } from '@/components/PreferenceSettings';
 import { SummaryModelSettings } from '@/components/SummaryModelSettings';
+import { ContextFilePicker } from '@/components/ContextFilePicker';
 import { useConfig } from '@/contexts/ConfigContext';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 
@@ -17,7 +18,8 @@ const TABS = [
   { value: 'general', label: 'General', icon: Settings2 },
   { value: 'recording', label: 'Recordings', icon: Mic },
   { value: 'Transcriptionmodels', label: 'Transcription', icon: DatabaseIcon },
-  { value: 'summaryModels', label: 'Summary', icon: SparkleIcon }
+  { value: 'summaryModels', label: 'Summary', icon: SparkleIcon },
+  { value: 'context', label: 'Context', icon: FileText },
 ] as const;
 
 export default function SettingsPage() {
@@ -28,6 +30,9 @@ export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState('general');
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const [underlineStyle, setUnderlineStyle] = useState({ left: 0, width: 0 });
+
+  // Context file paths — ephemeral, session-only state (never persisted to DB)
+  const [contextFilePaths, setContextFilePaths] = useState<string[]>([]);
 
   // Load saved transcript configuration on mount
   useEffect(() => {
@@ -121,6 +126,12 @@ export default function SettingsPage() {
             </TabsContent>
             <TabsContent value="summaryModels">
               <SummaryModelSettings />
+            </TabsContent>
+            <TabsContent value="context">
+              <ContextFilePicker
+                selectedPaths={contextFilePaths}
+                onSelectionChange={setContextFilePaths}
+              />
             </TabsContent>
           </Tabs>
         </div>
