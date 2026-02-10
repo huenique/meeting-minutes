@@ -221,7 +221,9 @@ class RAGEngine:
 
         # Construct the prompt with direct file context
         prompt = _build_rag_prompt(
-            question, meeting_context, knowledge_context="",
+            question=question,
+            meeting_context=meeting_context,
+            knowledge_context="",
             file_context=file_context,
         )
 

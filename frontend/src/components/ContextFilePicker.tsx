@@ -104,7 +104,7 @@ export function ContextFilePicker({
           Context Files
         </h3>
         <p className="text-sm text-gray-600 mb-4">
-          Select files or folders to provide as context for Q&amp;A. Files are
+          Select files or folders to provide as context for Q&A. Files are
           read on-the-fly and <strong>never stored</strong> in the database —
           context is session-only and cleared when the app closes.
         </p>
