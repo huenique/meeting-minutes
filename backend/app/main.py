@@ -10,6 +10,8 @@ from db import DatabaseManager
 import json
 from threading import Lock
 from transcript_processor import TranscriptProcessor
+from question_detector import detect_questions, DetectedQuestion
+from rag_engine import RAGEngine, RAGAnswer, read_files_as_context
 import time
 
 # Load environment variables
@@ -629,6 +631,263 @@ async def search_transcripts(request: SearchRequest):
     except Exception as e:
         logger.error(f"Error searching transcripts: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+# --- RAG / Question Detection Endpoints ---
+
+# Initialize RAG engine (lazy-loads ChromaDB on first use)
+rag_engine = RAGEngine()
+
+
+class DetectQuestionsRequest(BaseModel):
+    transcript_text: str
+
+
+class DetectQuestionsResponse(BaseModel):
+    questions: List[DetectedQuestion]
+
+
+@app.post("/detect-questions", response_model=DetectQuestionsResponse)
+async def detect_questions_api(request: DetectQuestionsRequest):
+    """Detect questions in a transcript text."""
+    try:
+        questions = detect_questions(request.transcript_text)
+        return DetectQuestionsResponse(questions=questions)
+    except Exception as e:
+        logger.error(f"Error detecting questions: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class AskQuestionRequest(BaseModel):
+    question: str
+    meeting_context: Optional[str] = ""
+    model: Optional[str] = "ollama"
+    model_name: Optional[str] = "llama3.2"
+    n_results: Optional[int] = 5
+
+
+@app.post("/ask-question")
+async def ask_question_api(request: AskQuestionRequest):
+    """Answer a question using the RAG pipeline (meeting context + knowledge base)."""
+    try:
+        answer = await rag_engine.generate_answer(
+            question=request.question,
+            meeting_context=request.meeting_context or "",
+            model=request.model or "ollama",
+            model_name=request.model_name or "llama3.2",
+            n_results=request.n_results or 5,
+        )
+        return answer.model_dump()
+    except ImportError as e:
+        raise HTTPException(
+            status_code=501,
+            detail=f"RAG dependencies not installed: {str(e)}",
+        )
+    except Exception as e:
+        logger.error(f"Error answering question: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class AskQuestionWithContextRequest(BaseModel):
+    """Request model for answering questions with direct file context.
+
+    Files are read ephemerally — their content is never stored in a database
+    or vector store. Context is used only for the current request.
+    """
+    question: str
+    meeting_context: Optional[str] = ""
+    file_paths: List[str] = []
+    model: Optional[str] = "ollama"
+    model_name: Optional[str] = "llama3.2"
+
+
+@app.post("/ask-question-with-context")
+async def ask_question_with_context_api(request: AskQuestionWithContextRequest):
+    """Answer a question using direct file content as context (no vectorization).
+
+    Files are read on-the-fly and included in the LLM prompt. No file content
+    is stored in the database — context is ephemeral and session-only.
+    """
+    try:
+        answer = await rag_engine.generate_answer_with_files(
+            question=request.question,
+            meeting_context=request.meeting_context or "",
+            file_paths=request.file_paths,
+            model=request.model or "ollama",
+            model_name=request.model_name or "llama3.2",
+        )
+        return answer.model_dump()
+    except ImportError as e:
+        raise HTTPException(
+            status_code=501,
+            detail=f"RAG dependencies not installed: {str(e)}",
+        )
+    except Exception as e:
+        logger.error(f"Error answering question with context: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/read-context-files")
+async def read_context_files_api(request: AskQuestionWithContextRequest):
+    """Read files and return their extracted text content for preview.
+
+    Files are read ephemerally — content is not stored anywhere.
+    Useful for previewing what context will be sent to the LLM.
+    """
+    try:
+        file_contents = read_files_as_context(request.file_paths)
+        return [
+            {
+                "filename": fc["filename"],
+                "file_path": fc["file_path"],
+                "text_preview": fc["text"][:500],
+                "text_length": len(fc["text"]),
+            }
+            for fc in file_contents
+        ]
+    except Exception as e:
+        logger.error(f"Error reading context files: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class IndexFileRequest(BaseModel):
+    file_path: str
+    chunk_size: Optional[int] = 500
+    overlap: Optional[int] = 50
+
+
+class IndexDirectoryRequest(BaseModel):
+    directory_path: str
+    recursive: Optional[bool] = True
+    chunk_size: Optional[int] = 500
+    overlap: Optional[int] = 50
+
+
+@app.post("/index-file")
+async def index_file_api(request: IndexFileRequest):
+    """Index a single file into the knowledge base."""
+    try:
+        metadata = rag_engine.indexer.index_file(
+            file_path=request.file_path,
+            chunk_size=request.chunk_size or 500,
+            overlap=request.overlap or 50,
+        )
+        return metadata.model_dump()
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except ImportError as e:
+        raise HTTPException(
+            status_code=501,
+            detail=f"RAG dependencies not installed: {str(e)}",
+        )
+    except Exception as e:
+        logger.error(f"Error indexing file: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/index-directory")
+async def index_directory_api(request: IndexDirectoryRequest):
+    """Index all supported files in a directory."""
+    try:
+        results = rag_engine.indexer.index_directory(
+            directory_path=request.directory_path,
+            recursive=request.recursive if request.recursive is not None else True,
+            chunk_size=request.chunk_size or 500,
+            overlap=request.overlap or 50,
+        )
+        return [r.model_dump() for r in results]
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ImportError as e:
+        raise HTTPException(
+            status_code=501,
+            detail=f"RAG dependencies not installed: {str(e)}",
+        )
+    except Exception as e:
+        logger.error(f"Error indexing directory: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/knowledge-base/documents")
+async def list_knowledge_base_documents():
+    """List all documents in the knowledge base."""
+    try:
+        docs = rag_engine.indexer.list_documents()
+        return docs
+    except ImportError as e:
+        raise HTTPException(
+            status_code=501,
+            detail=f"RAG dependencies not installed: {str(e)}",
+        )
+    except Exception as e:
+        logger.error(f"Error listing documents: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class RemoveDocumentRequest(BaseModel):
+    doc_id: str
+
+
+@app.post("/knowledge-base/remove-document")
+async def remove_document_api(request: RemoveDocumentRequest):
+    """Remove a document from the knowledge base."""
+    try:
+        removed = rag_engine.indexer.remove_document(request.doc_id)
+        if not removed:
+            raise HTTPException(status_code=404, detail="Document not found")
+        return {"message": "Document removed successfully"}
+    except HTTPException:
+        raise
+    except ImportError as e:
+        raise HTTPException(
+            status_code=501,
+            detail=f"RAG dependencies not installed: {str(e)}",
+        )
+    except Exception as e:
+        logger.error(f"Error removing document: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/knowledge-base/stats")
+async def knowledge_base_stats():
+    """Get statistics about the knowledge base."""
+    try:
+        stats = rag_engine.indexer.get_stats()
+        return stats
+    except ImportError as e:
+        raise HTTPException(
+            status_code=501,
+            detail=f"RAG dependencies not installed: {str(e)}",
+        )
+    except Exception as e:
+        logger.error(f"Error getting KB stats: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class SearchKnowledgeBaseRequest(BaseModel):
+    query: str
+    n_results: Optional[int] = 5
+
+
+@app.post("/knowledge-base/search")
+async def search_knowledge_base_api(request: SearchKnowledgeBaseRequest):
+    """Search the knowledge base for relevant documents."""
+    try:
+        results = rag_engine.indexer.search(
+            query=request.query,
+            n_results=request.n_results or 5,
+        )
+        return results
+    except ImportError as e:
+        raise HTTPException(
+            status_code=501,
+            detail=f"RAG dependencies not installed: {str(e)}",
+        )
+    except Exception as e:
+        logger.error(f"Error searching knowledge base: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.on_event("shutdown")
 async def shutdown_event():

@@ -55,6 +55,9 @@ docs/demo.gif
 
 meeting_minutes.db
 
+# Knowledge base data (ChromaDB persistence)
+knowledge_base/
+
 # Added by Task Master AI
 # Logs
 logs
@@ -75,6 +78,8 @@ node_modules/
 experiments/
 .cursor/
 target/
+__pycache__/
+.pytest_cache/
 
 frontend/src-tauri/binaries/
 Cargo.lock
